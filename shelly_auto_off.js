@@ -143,26 +143,29 @@ function startMonitoring() {
     monitoringTimerHandle = Timer.set(checkInterval, true, function() {
         let elapsed = Date.now() - monitoringStartTime;
         let elapsedSeconds = Math.round(elapsed / 1000);
-        print("DEBUG: Checking for power consumption. Runtime: " + elapsedSeconds + " seconds out of a maximum of " + (checkDuration / 1000) + "s.");
 
-        // Case 1: Monitoring duration exceeded -> Standby detected (Successful shutdown path)
-        if (elapsed >= checkDuration) {
-            print("DEBUG: *** SHUTDOWN PATH INITIATED *** Monitoring ended (Standby confirmed). SHUTTING DOWN."); 
-            sendPushNotification("STANDBY_OFF_DETECTED"); 
-            
-            // Performs the actual shutdown
-            Shelly.call("Switch.Set", { id: 0, on: false }, function(result, error_code, error_message) {
-                 if (error_code) {
-                    print("ERROR: Could not shut down Shelly: " + error_message);
+        // Fetch current power to make the correct shutdown decision
+        Shelly.call("Switch.GetStatus", { id: 0 }, function(result) {
+            let currentPower = result.apower;
+            print("DEBUG: Checking for power consumption. Runtime: " + elapsedSeconds + " seconds out of a maximum of " + (checkDuration / 1000) + "s.");
+
+            // Case 1: Monitoring duration exceeded
+            if (elapsed >= checkDuration) {
+                // Check: Is the machine still consuming power?
+                if (currentPower >= POWER_ACTIVE_THRESHOLD) {
+                    print("DEBUG: *** AUTO-OFF PATH *** Machine still drawing power (" + currentPower + "W). SHUTTING DOWN."); 
+                    sendPushNotification("MACHINE_AUTO_OFF"); 
+                    Shelly.call("Switch.Set", { id: 0, on: false }); 
                 } else {
-                    print("DEBUG: Shelly successfully shut down.");
+                    print("DEBUG: *** SHUTDOWN PATH INITIATED *** Monitoring ended (Standby confirmed)."); 
+                    sendPushNotification("STANDBY_OFF_DETECTED"); 
                 }
-            });
 
-            controlSceneActivation("MORNING_TOGGLE_SCENE", true);
-            resetAndStop();
-            return;
-        }
+                controlSceneActivation("MORNING_TOGGLE_SCENE", true);
+                resetAndStop();
+                return;
+            }
+        });
     });
 }
 
@@ -197,6 +200,7 @@ Shelly.addStatusHandler(function(event) {
         print("DEBUG: Status change switch:0, Power: " + currentPower + "W. Current State: " + scriptState);
 
         // --- CHECK 1: IMMEDIATE EMERGENCY SHUTDOWN in MONITORING state ---
+        // Safety check: if power spikes during monitoring, trigger auto-off immediately
         if (scriptState === STATE.MONITORING && currentPower >= POWER_ACTIVE_THRESHOLD) {
              print("DEBUG: Power increase (" + currentPower + "W) detected IN MONITORING state. Performing immediate emergency shutdown (MACHINE_AUTO_OFF).");
              Shelly.call("Switch.Set", { id: 0, on: false }); 
